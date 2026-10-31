@@ -10,6 +10,8 @@
 
 核心故事（卖点）：**沙箱（隔离）层正在被商品化，竞争壁垒上移到控制面。我们的差异化不在"又一个沙箱"，而在把「冻结 + 复现」做成一等公民的实验管理——这是当前轻量自托管领域的一块空白。**
 
+**切题关键（OS 是主角，不是实现细节）**：这套「冻结 + 复现」不是拿容器当黑盒，而是**用操作系统机制亲手实现**——冻结 = overlayfs 快照，隔离 = namespaces + cgroups + seccomp，复现 = ptrace/syscall 记录重放。OS 机制是本体，实验室工作流是它的应用层。
+
 ## 2. 为什么做这个
 
 ### 课程层面
@@ -46,7 +48,7 @@ E2B、Daytona、Modal、Fly.io Sprites、Vercel Sandbox、Google K8s Agent Sandb
 - NsJail（Google）、go-sandbox（在线判题常用）、sandlock（Landlock + seccomp-notify）
 - 标准最小路径：`clone/unshare(namespaces)` → `pivot_root` → 丢 capabilities → seccomp-bpf → cgroup 限额 → `execve`
 
-**结论：隔离原语是已解决的，直接站在它们肩膀上，不重写。**
+**结论：隔离原语成熟可参考。本项目把 kern / go-sandbox / NsJail 当参考读物（读实现学思路），但沙箱核心亲手实现——这是课程要的 OS 设计能力，也是项目的 OS 实质所在。**
 
 ### 3.4 「快照 / 冻结」是正在冒头、但没人做轻的前沿
 
@@ -105,7 +107,7 @@ Fly.io Sprites（亚秒 checkpoint/restore）、Google K8s Agent Sandbox（pod �
 ### 反目标（做错方向 = 失败）
 - 试图让 agent 确定性化
 - 让「冻结」变成事后补丁（那就退化成又一个容器工具）
-- 重写沙箱原语（重复造轮子）
+- 重新发明一个通用沙箱产品（重复造轮子；亲手实现 OS 引擎 ≠ 重复造轮子，见第 8 节）
 
 ## 6. 核心概念：三层冻结模型
 
@@ -113,15 +115,16 @@ Fly.io Sprites（亚秒 checkpoint/restore）、Google K8s Agent Sandbox（pod �
 |---|---|---|---|---|
 | **① 世界** | 代码 + 依赖 + 文件系统快照 | overlayfs / COW + namespaces + cgroups | OS | 让「回到那个世界重跑」成为可能（git 做不到的） |
 | **② 配方** | prompt + 模型 ID/版本 + 采样参数(temperature/seed) + 配置 | lockfile 式 manifest | 数据 / 配置 | 让「agent 实验室」区别于「普通容器快照」 |
-| **③ 轨迹** | 一次运行里 agent 的 tool call 序列 + 每次 LLM 输入/输出 | trace 记录 + replay | 可观测 | 压住「概率性 + 自主性」，实现逐帧复现 |
+| **③ 轨迹** | 一次运行里 agent 的 tool call 序列 + 每次 LLM 输入/输出 | ptrace/syscall 记录 + 确定性 replay | OS（进程追踪）+ 可观测 | 压住「概率性 + 自主性」，实现逐帧复现 |
 
 - ① + ② → 「可比较」（A/B、分布对比）
 - ③ → 「可复现」（逐帧重放）
 
-三层恰好切进三个领域，是这套方案的骨架：
-- **① 世界 = OS 原理**（课程报告的抓手）
-- **② 配方 = 数据/配置版本化**（差异化，也是「轻」的真正来源——不用 Docker，一个 manifest + 一个 COW 快照就够）
-- **③ 轨迹 = 可观测性**（本人的主场）
+三层的 OS 分布（切题的关键）：
+
+- **① 世界 = OS 机制**（课程报告的抓手）：namespaces + cgroups + seccomp + overlayfs 快照
+- **② 配方 = 数据/配置版本化**（差异化，也是「轻」的真正来源——不用 Docker，一个 manifest + 一个 COW 快照就够）；这一层非 OS，负责「完整性/实用价值」，不喧宾夺主即可
+- **③ 轨迹 = 可做成 OS 的系统编程**：记录走 ptrace/syscall 拦截，重放走确定性 replay（rr / GDB record 那一脉），把「可观测性」转成「进程追踪 + 确定性重放」的经典系统问题；MVP 先只做「能记录」
 
 ## 7. 约束
 
@@ -131,7 +134,7 @@ Fly.io Sprites（亚秒 checkpoint/restore）、Google K8s Agent Sandbox（pod �
 
 ## 8. 架构决策（已定）
 
-1. 站在 kern / go-sandbox 肩膀上，不重写沙箱原语
+1. 沙箱核心亲手实现：`clone/unshare` → `pivot_root` → drop caps → seccomp-bpf → cgroup → `execve`，外加 overlayfs 快照；kern / go-sandbox / NsJail 仅作参考读物。不重复的是「通用沙箱产品」，亲手实现的是「OS 引擎」
 2. 隔离定位：半受信（自己/团队跑自己的代码），namespace + cgroup + seccomp 足够
 3. MVP 脊柱 = ① + ②（世界 + 配方）；③ 先「能记录」，完整确定性 replay 留作进阶
 4. 冻结机制：环境 = overlayfs/COW 快照；配方 = lockfile 式 manifest
@@ -139,6 +142,8 @@ Fly.io Sprites（亚秒 checkpoint/restore）、Google K8s Agent Sandbox（pod �
 ## 9. MVP 范围（课程交付）
 
 第一阶段：
+
+- 亲手实现沙箱引擎：namespaces + cgroups + seccomp + overlayfs 快照（见第 8 节）
 - 创建 / 冻结一个环境快照（代码 + 依赖 + 文件系统，COW）
 - 配方 manifest 版本化（prompt / 模型 / 采样 / 配置）
 - 回到某个快照重跑，diff 两个版本
@@ -147,12 +152,15 @@ Fly.io Sprites（亚秒 checkpoint/restore）、Google K8s Agent Sandbox（pod �
 
 ## 10. 留待决定（open questions）
 
-以下为本人（作者）的初步倾向，未最终拍板：
+已定（2026-10-31 更新）：
 
-1. **技术栈** —— 未定。倾向 Go（沙箱/容器生态天然、单二进制、go-sandbox 先例）；备选 Rust（kern 先例、最轻）、Python（agent 生态、主场但不够轻）。
-2. **MVP 里「Agent」的形态** —— 未定。倾向：MVP 先做「冻结可复现的执行环境」（对任意代码/脚本），LLM agent 作为实验室的「消费者」第二阶段接入；理由：先啃最难也最核心的「冻结世界」，agent 集成是乘法不是加法。
-3. **运行形态** —— 倾向 CLI 优先（单命令快照/重跑/对比），daemon + API 后置。
-4. **命名** —— 未定。
+1. **技术栈 = Go**（沙箱/容器生态天然、单二进制、runc/containerd/go-sandbox 先例；可直接写裸 syscall）。
+2. **MVP 里「Agent」的形态**：阶段 1 不做 agent，先做「冻结可复现的执行环境」（对任意代码/脚本）；LLM agent 作为实验室的「消费者」在阶段 2 接入（见路线文档）。
+3. **运行形态**：CLI 优先（snapshot / run / diff），daemon + API 后置。
+
+仍待定：
+
+- **命名** —— 未定。
 
 ## 11. 参考资料
 
