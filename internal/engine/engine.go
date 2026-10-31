@@ -23,9 +23,10 @@ type Spec struct {
 }
 
 const (
-	initArg    = "__cryo-init"
-	rootfsEnv  = "__CRYO_ROOTFS"
-	workdirEnv = "__CRYO_WORKDIR"
+	initArg     = "__cryo-init"
+	rootfsEnv   = "__CRYO_ROOTFS"
+	workdirEnv  = "__CRYO_WORKDIR"
+	dropCapsEnv = "__CRYO_DROP_CAPS"
 )
 
 // init 检测 reexec 进入的 init 进程，直接走 initRun，避免落入测试/主程序入口。
@@ -33,9 +34,10 @@ const (
 func init() {
 	if len(os.Args) >= 2 && os.Args[1] == initArg {
 		spec := &Spec{
-			Command: os.Args[2:],
-			Rootfs:  os.Getenv(rootfsEnv),
-			Workdir: os.Getenv(workdirEnv),
+			Command:  os.Args[2:],
+			Rootfs:   os.Getenv(rootfsEnv),
+			Workdir:  os.Getenv(workdirEnv),
+			DropCaps: os.Getenv(dropCapsEnv) == "1",
 		}
 		code, err := initRun(spec)
 		if err != nil {
@@ -59,12 +61,37 @@ func parentRun(spec *Spec) (int, error) {
 	argv := append([]string{initArg}, spec.Command...)
 	cmd := exec.Command(self, argv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: initCloneFlags}
-	cmd.Env = append(os.Environ(), rootfsEnv+"="+spec.Rootfs, workdirEnv+"="+spec.Workdir)
+
+	// 同步管道：父进程写完 uid/gid map 后关闭写端，子进程读到 EOF 才继续
+	syncR, syncW, err := os.Pipe()
+	if err != nil {
+		return -1, err
+	}
+	defer syncR.Close()
+	cmd.ExtraFiles = []*os.File{syncR}
+
+	dropCaps := "0"
+	if spec.DropCaps {
+		dropCaps = "1"
+	}
+	cmd.Env = append(os.Environ(), rootfsEnv+"="+spec.Rootfs, workdirEnv+"="+spec.Workdir, dropCapsEnv+"="+dropCaps)
 	cmd.Env = append(cmd.Env, spec.Env...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
+
+	if err := cmd.Start(); err != nil {
+		syncW.Close()
+		return -1, err
+	}
+	if err := writeChildIDMap(cmd.Process.Pid, os.Getuid(), os.Getgid()); err != nil {
+		syncW.Close()
+		_ = cmd.Wait()
+		return -1, err
+	}
+	syncW.Close() // 通知子进程继续
+
+	if err := cmd.Wait(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode(), nil
 		}
@@ -77,7 +104,7 @@ func initRun(spec *Spec) (int, error) {
 	if len(spec.Command) == 0 {
 		return -1, fmt.Errorf("engine: empty command")
 	}
-	// 已在 init 命名空间内（clone flags 建立），这里只处理 rootfs/workdir
+	waitForUIDMap() // 等待父进程写完 uid/gid map（此后进程即 userns 内的 root）
 	if err := setupRootfs(spec.Rootfs); err != nil {
 		return -1, fmt.Errorf("rootfs: %w", err)
 	}
@@ -86,7 +113,14 @@ func initRun(spec *Spec) (int, error) {
 			return -1, fmt.Errorf("workdir: %w", err)
 		}
 	}
-	// init 已是新 PID 命名空间的 PID 1（clone flags 建立），直接 exec 替换自身即可让目标成为 PID 1
+	if spec.DropCaps {
+		if err := dropAllCaps(); err != nil {
+			return -1, fmt.Errorf("drop caps: %w", err)
+		}
+		// 报告 exec 前的 CapEff，供测试/演示观察降权是否生效
+		fmt.Fprintf(os.Stderr, "cryo drop-caps-eff=%s\n", readCapEff())
+	}
+	// init 已是新 PID 命名空间的 PID 1，直接 exec 替换自身即可让目标成为 PID 1
 	if err := syscall.Exec(spec.Command[0], spec.Command, os.Environ()); err != nil {
 		return -1, fmt.Errorf("exec: %w", err)
 	}
