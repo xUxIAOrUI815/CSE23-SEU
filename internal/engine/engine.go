@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -27,6 +28,7 @@ const (
 	rootfsEnv   = "__CRYO_ROOTFS"
 	workdirEnv  = "__CRYO_WORKDIR"
 	dropCapsEnv = "__CRYO_DROP_CAPS"
+	seccompEnv  = "__CRYO_SECCOMP_ALLOW"
 )
 
 // init 检测 reexec 进入的 init 进程，直接走 initRun，避免落入测试/主程序入口。
@@ -38,6 +40,9 @@ func init() {
 			Rootfs:   os.Getenv(rootfsEnv),
 			Workdir:  os.Getenv(workdirEnv),
 			DropCaps: os.Getenv(dropCapsEnv) == "1",
+		}
+		if s := os.Getenv(seccompEnv); s != "" {
+			spec.SeccompAllow = strings.Split(s, ",")
 		}
 		code, err := initRun(spec)
 		if err != nil {
@@ -74,7 +79,12 @@ func parentRun(spec *Spec) (int, error) {
 	if spec.DropCaps {
 		dropCaps = "1"
 	}
-	cmd.Env = append(os.Environ(), rootfsEnv+"="+spec.Rootfs, workdirEnv+"="+spec.Workdir, dropCapsEnv+"="+dropCaps)
+	cmd.Env = append(os.Environ(),
+		rootfsEnv+"="+spec.Rootfs,
+		workdirEnv+"="+spec.Workdir,
+		dropCapsEnv+"="+dropCaps,
+		seccompEnv+"="+strings.Join(spec.SeccompAllow, ","),
+	)
 	cmd.Env = append(cmd.Env, spec.Env...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -117,8 +127,16 @@ func initRun(spec *Spec) (int, error) {
 		if err := dropAllCaps(); err != nil {
 			return -1, fmt.Errorf("drop caps: %w", err)
 		}
-		// 报告 exec 前的 CapEff，供测试/演示观察降权是否生效
 		fmt.Fprintf(os.Stderr, "cryo drop-caps-eff=%s\n", readCapEff())
+	}
+	if len(spec.SeccompAllow) > 0 {
+		f, err := buildBPF(spec.SeccompAllow)
+		if err != nil {
+			return -1, fmt.Errorf("seccomp: %w", err)
+		}
+		if err := applySeccomp(f); err != nil {
+			return -1, fmt.Errorf("seccomp apply: %w", err)
+		}
 	}
 	// init 已是新 PID 命名空间的 PID 1，直接 exec 替换自身即可让目标成为 PID 1
 	if err := syscall.Exec(spec.Command[0], spec.Command, os.Environ()); err != nil {
