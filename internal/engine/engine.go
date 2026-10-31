@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 )
 
 type Limits struct {
-	MemoryBytes int64
-	Pids        int64
+	MemoryBytes int64 // 经 RLIMIT_AS 实现；进程数/CPU 限额需 cgroup v2（root 模式，roadmap）
 }
 
 type Spec struct {
@@ -29,6 +29,7 @@ const (
 	workdirEnv  = "__CRYO_WORKDIR"
 	dropCapsEnv = "__CRYO_DROP_CAPS"
 	seccompEnv  = "__CRYO_SECCOMP_ALLOW"
+	memoryEnv   = "__CRYO_MEMORY_LIMIT"
 )
 
 // init 检测 reexec 进入的 init 进程，直接走 initRun，避免落入测试/主程序入口。
@@ -43,6 +44,9 @@ func init() {
 		}
 		if s := os.Getenv(seccompEnv); s != "" {
 			spec.SeccompAllow = strings.Split(s, ",")
+		}
+		if s := os.Getenv(memoryEnv); s != "" {
+			spec.Limits.MemoryBytes, _ = strconv.ParseInt(s, 10, 64)
 		}
 		code, err := initRun(spec)
 		if err != nil {
@@ -84,6 +88,7 @@ func parentRun(spec *Spec) (int, error) {
 		workdirEnv+"="+spec.Workdir,
 		dropCapsEnv+"="+dropCaps,
 		seccompEnv+"="+strings.Join(spec.SeccompAllow, ","),
+		memoryEnv+"="+strconv.FormatInt(spec.Limits.MemoryBytes, 10),
 	)
 	cmd.Env = append(cmd.Env, spec.Env...)
 	cmd.Stdin = os.Stdin
@@ -121,6 +126,11 @@ func initRun(spec *Spec) (int, error) {
 	if spec.Workdir != "" {
 		if err := os.Chdir(spec.Workdir); err != nil {
 			return -1, fmt.Errorf("workdir: %w", err)
+		}
+	}
+	if spec.Limits.MemoryBytes > 0 {
+		if err := applyMemoryLimit(spec.Limits.MemoryBytes); err != nil {
+			return -1, fmt.Errorf("memory limit: %w", err)
 		}
 	}
 	if spec.DropCaps {
