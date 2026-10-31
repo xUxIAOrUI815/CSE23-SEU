@@ -149,7 +149,14 @@ func initRun(spec *Spec) (int, error) {
 		}
 	}
 	// init 已是新 PID 命名空间的 PID 1，直接 exec 替换自身即可让目标成为 PID 1
-	if err := syscall.Exec(spec.Command[0], spec.Command, os.Environ()); err != nil {
+	// 裸命令名需先经 PATH 解析（execve 不搜 PATH）
+	argv0 := spec.Command[0]
+	if !strings.Contains(argv0, "/") {
+		if p, err := exec.LookPath(argv0); err == nil {
+			argv0 = p
+		}
+	}
+	if err := syscall.Exec(argv0, spec.Command, os.Environ()); err != nil {
 		return -1, fmt.Errorf("exec: %w", err)
 	}
 	return 0, nil // unreachable

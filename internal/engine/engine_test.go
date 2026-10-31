@@ -44,3 +44,11 @@ func TestRunCommandNotFound(t *testing.T) {
 		t.Error("expected non-zero exit code for missing command")
 	}
 }
+
+func TestRunBareCommand(t *testing.T) {
+	// 裸命令名应能通过 PATH 解析（syscall.Exec 本身不搜 PATH）
+	out := runCapture(t, &Spec{Command: []string{"sh", "-c", "echo bare-ok"}})
+	if !strings.Contains(out, "bare-ok") {
+		t.Errorf("expected bare-ok in output, got %q", out)
+	}
+}
