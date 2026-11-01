@@ -5,11 +5,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
 	"cryolab/internal/engine"
 	"cryolab/internal/manifest"
 	"cryolab/internal/snapshot"
 	"cryolab/internal/store"
+	"cryolab/internal/trace"
 )
 
 const usage = `cryo — 轻量可复现的实验沙箱
@@ -121,8 +125,19 @@ func cmdRun(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "open store: %v\n", err)
 		return 1
 	}
-	if _, err := s.LoadManifest(name); err != nil {
+	m, err := s.LoadManifest(name)
+	if err != nil {
 		fmt.Fprintf(stderr, "snapshot %s: %v\n", name, err)
+		return 1
+	}
+	// 配方复现：应用 manifest 里的 env（代码之外的配置被一起冻结）
+	env := make([]string, 0, len(m.Env))
+	for k, v := range m.Env {
+		env = append(env, k+"="+v)
+	}
+	base, err := s.BasePath(name)
+	if err != nil {
+		fmt.Fprintf(stderr, "base: %v\n", err)
 		return 1
 	}
 	// 冻结 + 复现：overlay lower=快照 base（只读冻结层），upper/work/mnt=一次性可丢弃写层
@@ -141,11 +156,28 @@ func cmdRun(args []string, stderr io.Writer) int {
 			return 1
 		}
 	}
+	// 轨迹记录（③ 轨迹层）：exec + exit 两条事件
+	runsDir := filepath.Join(s.Root, "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "runs: %v\n", err)
+		return 1
+	}
+	tf, err := os.Create(filepath.Join(runsDir, fmt.Sprintf("%s-%d.jsonl", name, time.Now().UnixNano())))
+	if err != nil {
+		fmt.Fprintf(stderr, "trace: %v\n", err)
+		return 1
+	}
+	defer tf.Close()
+	rec := trace.NewRecorder(tf)
+	_ = rec.Record(trace.Event{Type: "exec", Detail: strings.Join(cmd, " ")})
+
 	code, err := engine.Run(&engine.Spec{
 		Command: cmd,
-		Overlay: &snapshot.Overlay{LowerDir: s.BasePath(name), UpperDir: upper, WorkDir: work, MountPoint: mnt},
+		Env:     env,
+		Overlay: &snapshot.Overlay{LowerDir: base, UpperDir: upper, WorkDir: work, MountPoint: mnt},
 		Workdir: mnt,
 	})
+	_ = rec.Record(trace.Event{Type: "exit", Detail: strconv.Itoa(code)})
 	if err != nil {
 		fmt.Fprintf(stderr, "run: %v\n", err)
 		return 1

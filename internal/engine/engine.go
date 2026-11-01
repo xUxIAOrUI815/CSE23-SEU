@@ -123,6 +123,13 @@ func initRun(spec *Spec) (int, error) {
 			return -1, fmt.Errorf("workdir: %w", err)
 		}
 	}
+	// 裸命令名需先经 PATH 解析（execve 不搜 PATH）；必须在 seccomp 之前——LookPath 会触发 stat 类 syscall
+	argv0 := spec.Command[0]
+	if !strings.Contains(argv0, "/") {
+		if p, err := exec.LookPath(argv0); err == nil {
+			argv0 = p
+		}
+	}
 	if spec.Limits.MemoryBytes > 0 {
 		if err := applyMemoryLimit(spec.Limits.MemoryBytes); err != nil {
 			return -1, fmt.Errorf("memory limit: %w", err)
@@ -135,13 +142,6 @@ func initRun(spec *Spec) (int, error) {
 		}
 		if err := applySeccomp(f); err != nil {
 			return -1, fmt.Errorf("seccomp apply: %w", err)
-		}
-	}
-	// 裸命令名需先经 PATH 解析（execve 不搜 PATH）
-	argv0 := spec.Command[0]
-	if !strings.Contains(argv0, "/") {
-		if p, err := exec.LookPath(argv0); err == nil {
-			argv0 = p
 		}
 	}
 	if err := syscall.Exec(argv0, spec.Command, os.Environ()); err != nil {

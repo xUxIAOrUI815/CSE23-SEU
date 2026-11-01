@@ -34,3 +34,26 @@ func TestOverlayMount(t *testing.T) {
 		t.Errorf("writable upper layer should contain new.txt: %v", err)
 	}
 }
+
+func TestDropCapsAndOverlay(t *testing.T) {
+	base := t.TempDir()
+	upper := t.TempDir()
+	work := t.TempDir()
+	mnt := t.TempDir()
+	if err := os.WriteFile(base+"/keep.txt", []byte("frozen"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 组合：降权 + overlay 挂载。overlay 应先挂（需 CAP_SYS_ADMIN），再降权。
+	out := runCapture(t, &Spec{
+		DropCaps: true,
+		Overlay:  &snapshot.Overlay{LowerDir: base, UpperDir: upper, WorkDir: work, MountPoint: mnt},
+		Command:  []string{"/bin/sh", "-c", "cat " + mnt + "/keep.txt; echo; grep CapEff /proc/self/status"},
+	})
+	if !strings.Contains(out, "frozen") {
+		t.Errorf("expected frozen content from overlay, got %q", out)
+	}
+	if cap := extractCapField(t, out, "CapEff"); cap != "0000000000000000" {
+		t.Errorf("expected zero CapEff with DropCaps+Overlay, got %q", cap)
+	}
+}

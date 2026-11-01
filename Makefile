@@ -11,7 +11,7 @@ $(NSHELPER): nshelper.c
 	cc -O2 -Wall -o $(NSHELPER) nshelper.c
 
 test: $(NSHELPER)
-	$(GO) test ./...
+	CRYO_NSHELPER=$(CURDIR)/$(NSHELPER) $(GO) test ./...
 
 clean:
 	rm -f $(NSHELPER) cryo

@@ -79,6 +79,10 @@ int main(int argc, char **argv) {
     if (unshare(CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWIPC | CLONE_NEWUTS | CLONE_NEWNET) < 0)
         die("unshare ns");
 
+    // 把新挂载命名空间设为 slave，防止挂载传播回宿主（runc 同款）
+    if (mount("", "/", "", MS_SLAVE | MS_REC, NULL) < 0)
+        die("mount slave");
+
     // 3. fork：PID 命名空间要 fork 后子进程才成为 PID 1
     pid_t pid = fork();
     if (pid < 0) die("fork");
@@ -89,11 +93,11 @@ int main(int argc, char **argv) {
         return 128 + WTERMSIG(status);
     }
 
-    // 4. 子进程（PID 1）：降权 + 挂载 overlay，然后 exec 回 Go init
-    if (getenv("CRYO_DROP_CAPS")) drop_caps();
+    // 4. 子进程（PID 1）：先挂 overlay（需要 CAP_SYS_ADMIN），再降权，最后 exec 回 Go init
     if (getenv("CRYO_OVERLAY_LOWER"))
         mount_overlay(getenv("CRYO_OVERLAY_LOWER"), getenv("CRYO_OVERLAY_UPPER"),
                       getenv("CRYO_OVERLAY_WORK"), getenv("CRYO_OVERLAY_MNT"));
+    if (getenv("CRYO_DROP_CAPS")) drop_caps();
 
     execve(go_binary, argv + 1, environ); // argv+1 = [go-binary, __cryo-init, target...]
     die("execve go init");

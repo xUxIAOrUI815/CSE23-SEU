@@ -27,11 +27,7 @@ func Open(root string) (*Store, error) {
 	return s, nil
 }
 
-func (s *Store) snapshotDir(name string) string {
-	return filepath.Join(s.Root, "snapshots", name)
-}
-
-// checkName 校验快照名，防路径穿越。
+// checkName 校验快照名，防路径穿越。所有访问快照的入口都经过它。
 func checkName(name string) error {
 	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." || name == "" {
 		return fmt.Errorf("store: invalid snapshot name %q", name)
@@ -39,12 +35,23 @@ func checkName(name string) error {
 	return nil
 }
 
-// Create 建 <root>/snapshots/<name>/{manifest.json, base/}。
-func (s *Store) Create(name string, m *manifest.Manifest) error {
+// snapshotDir 返回快照目录路径（带校验）。
+func (s *Store) snapshotDir(name string) (string, error) {
 	if err := checkName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.Root, "snapshots", name), nil
+}
+
+// Create 建 <root>/snapshots/<name>/{manifest.json, base/}；名字已存在则报错（避免 manifest 与 base 失配）。
+func (s *Store) Create(name string, m *manifest.Manifest) error {
+	dir, err := s.snapshotDir(name)
+	if err != nil {
 		return err
 	}
-	dir := s.snapshotDir(name)
+	if _, err := os.Stat(dir); err == nil {
+		return fmt.Errorf("store: snapshot %q already exists", name)
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "base"), 0o755); err != nil {
 		return err
 	}
@@ -73,17 +80,22 @@ func (s *Store) List() ([]string, error) {
 
 // LoadManifest 读回某个快照的 manifest。
 func (s *Store) LoadManifest(name string) (*manifest.Manifest, error) {
-	if err := checkName(name); err != nil {
+	dir, err := s.snapshotDir(name)
+	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(s.snapshotDir(name), "manifest.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
 		return nil, err
 	}
 	return manifest.Parse(data)
 }
 
-// BasePath 返回某个快照的冻结只读层目录。
-func (s *Store) BasePath(name string) string {
-	return filepath.Join(s.snapshotDir(name), "base")
+// BasePath 返回某个快照的冻结只读层目录（带校验）。
+func (s *Store) BasePath(name string) (string, error) {
+	dir, err := s.snapshotDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "base"), nil
 }

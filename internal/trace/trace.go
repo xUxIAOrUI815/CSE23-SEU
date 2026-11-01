@@ -22,5 +22,8 @@ func NewRecorder(w io.Writer) *Recorder {
 }
 
 func (r *Recorder) Record(ev Event) error {
+	if ev.Time.IsZero() {
+		ev.Time = time.Now()
+	}
 	return json.NewEncoder(r.w).Encode(ev)
 }

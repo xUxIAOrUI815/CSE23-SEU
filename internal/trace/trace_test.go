@@ -33,4 +33,7 @@ func TestRecordReadBack(t *testing.T) {
 	if evs[0].Type != "exec" {
 		t.Errorf("evs[0].Type = %q, want exec", evs[0].Type)
 	}
+	if evs[0].Time.IsZero() {
+		t.Error("expected non-zero time stamp")
+	}
 }
