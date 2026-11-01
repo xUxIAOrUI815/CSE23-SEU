@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"cryolab/internal/snapshot"
 )
 
 type Limits struct {
@@ -21,27 +23,33 @@ type Spec struct {
 	DropCaps     bool
 	SeccompAllow []string
 	Limits       Limits
+	Overlay      *snapshot.Overlay // overlayfs 冻结挂载（可选）
 }
 
 const (
-	initArg     = "__cryo-init"
-	initEnv     = "__CRYO_INIT"
-	rootfsEnv   = "__CRYO_ROOTFS"
-	workdirEnv  = "__CRYO_WORKDIR"
-	dropCapsEnv = "__CRYO_DROP_CAPS"
-	seccompEnv  = "__CRYO_SECCOMP_ALLOW"
-	memoryEnv   = "__CRYO_MEMORY_LIMIT"
+	initArg    = "__cryo-init"
+	initEnv    = "__CRYO_INIT"
+	rootfsEnv  = "__CRYO_ROOTFS"
+	workdirEnv = "__CRYO_WORKDIR"
+	seccompEnv = "__CRYO_SECCOMP_ALLOW"
+	memoryEnv  = "__CRYO_MEMORY_LIMIT"
+
+	// nshelper（C）读取的环境变量
+	dropCapsEnv     = "CRYO_DROP_CAPS"
+	overlayLowerEnv = "CRYO_OVERLAY_LOWER"
+	overlayUpperEnv = "CRYO_OVERLAY_UPPER"
+	overlayWorkEnv  = "CRYO_OVERLAY_WORK"
+	overlayMntEnv   = "CRYO_OVERLAY_MNT"
+	nshelperEnv     = "CRYO_NSHELPER"
 )
 
-// init 检测 reexec 进入的 init 进程，直接走 initRun，避免落入测试/主程序入口。
-// 这是 runc 同款的 reexec 模式。
+// init 检测由 nshelper exec 回来的 Go init 进程，直接走 initRun。
 func init() {
 	if os.Getenv(initEnv) == "1" && len(os.Args) >= 2 && os.Args[1] == initArg {
 		spec := &Spec{
-			Command:  os.Args[2:],
-			Rootfs:   os.Getenv(rootfsEnv),
-			Workdir:  os.Getenv(workdirEnv),
-			DropCaps: os.Getenv(dropCapsEnv) == "1",
+			Command: os.Args[2:],
+			Rootfs:  os.Getenv(rootfsEnv),
+			Workdir: os.Getenv(workdirEnv),
 		}
 		if s := os.Getenv(seccompEnv); s != "" {
 			spec.SeccompAllow = strings.Split(s, ",")
@@ -59,56 +67,41 @@ func init() {
 }
 
 // Run 隔离执行 Command 并等待退出，返回退出码。
+// 命名空间创建、uid/gid 映射、降权、overlay 挂载交给 C 助手 nshelper（单线程才能 unshare userns）。
 func Run(spec *Spec) (int, error) {
-	return parentRun(spec)
-}
-
-func parentRun(spec *Spec) (int, error) {
+	helper := os.Getenv(nshelperEnv)
+	if helper == "" {
+		helper = "nshelper"
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return -1, err
 	}
 	argv := append([]string{initArg}, spec.Command...)
-	cmd := exec.Command(self, argv...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: initCloneFlags}
-
-	// 同步管道：父进程写完 uid/gid map 后关闭写端，子进程读到 EOF 才继续
-	syncR, syncW, err := os.Pipe()
-	if err != nil {
-		return -1, err
-	}
-	defer syncR.Close()
-	cmd.ExtraFiles = []*os.File{syncR}
-
-	dropCaps := "0"
-	if spec.DropCaps {
-		dropCaps = "1"
-	}
-	cmd.Env = append(os.Environ(),
-		initEnv+"=1",
+	cmd := exec.Command(helper, append([]string{self}, argv...)...)
+	cmd.Env = append(os.Environ(), initEnv+"=1")
+	cmd.Env = append(cmd.Env,
 		rootfsEnv+"="+spec.Rootfs,
 		workdirEnv+"="+spec.Workdir,
-		dropCapsEnv+"="+dropCaps,
 		seccompEnv+"="+strings.Join(spec.SeccompAllow, ","),
 		memoryEnv+"="+strconv.FormatInt(spec.Limits.MemoryBytes, 10),
 	)
+	if spec.DropCaps {
+		cmd.Env = append(cmd.Env, dropCapsEnv+"=1")
+	}
+	if spec.Overlay != nil {
+		cmd.Env = append(cmd.Env,
+			overlayLowerEnv+"="+spec.Overlay.LowerDir,
+			overlayUpperEnv+"="+spec.Overlay.UpperDir,
+			overlayWorkEnv+"="+spec.Overlay.WorkDir,
+			overlayMntEnv+"="+spec.Overlay.MountPoint,
+		)
+	}
 	cmd.Env = append(cmd.Env, spec.Env...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		syncW.Close()
-		return -1, err
-	}
-	if err := writeChildIDMap(cmd.Process.Pid, os.Getuid(), os.Getgid()); err != nil {
-		syncW.Close()
-		_ = cmd.Wait()
-		return -1, err
-	}
-	syncW.Close() // 通知子进程继续
-
-	if err := cmd.Wait(); err != nil {
+	if err := cmd.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode(), nil
 		}
@@ -121,7 +114,7 @@ func initRun(spec *Spec) (int, error) {
 	if len(spec.Command) == 0 {
 		return -1, fmt.Errorf("engine: empty command")
 	}
-	waitForUIDMap() // 等待父进程写完 uid/gid map（此后进程即 userns 内的 root）
+	// 命名空间/uid_map/降权/overlay 已由 nshelper 完成，这里只做剩余加固与执行
 	if err := setupRootfs(spec.Rootfs); err != nil {
 		return -1, fmt.Errorf("rootfs: %w", err)
 	}
@@ -135,12 +128,6 @@ func initRun(spec *Spec) (int, error) {
 			return -1, fmt.Errorf("memory limit: %w", err)
 		}
 	}
-	if spec.DropCaps {
-		if err := dropAllCaps(); err != nil {
-			return -1, fmt.Errorf("drop caps: %w", err)
-		}
-		fmt.Fprintf(os.Stderr, "cryo drop-caps-eff=%s\n", readCapEff())
-	}
 	if len(spec.SeccompAllow) > 0 {
 		f, err := buildBPF(spec.SeccompAllow)
 		if err != nil {
@@ -150,7 +137,6 @@ func initRun(spec *Spec) (int, error) {
 			return -1, fmt.Errorf("seccomp apply: %w", err)
 		}
 	}
-	// init 已是新 PID 命名空间的 PID 1，直接 exec 替换自身即可让目标成为 PID 1
 	// 裸命令名需先经 PATH 解析（execve 不搜 PATH）
 	argv0 := spec.Command[0]
 	if !strings.Contains(argv0, "/") {

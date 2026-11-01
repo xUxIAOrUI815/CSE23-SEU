@@ -50,10 +50,9 @@ func TestDropCaps(t *testing.T) {
 		t.Fatalf("expected non-zero CapEff without DropCaps, got %q", cap)
 	}
 
-	// DropCaps=true：capset 清空了 exec 前的 CapEff（report 显示全零）。
-	// 注：rootless 下 exec 后目标进程会从 bounding set 重新获得 capability，这是已知局限（见 caps.go）。
-	dropOut := runCapture(t, &Spec{DropCaps: true, Command: []string{"/bin/sh", "-c", "true"}})
-	if !strings.Contains(dropOut, "cryo drop-caps-eff=0000000000000000") {
-		t.Errorf("expected zero CapEff report after drop, got %q", dropOut)
+	// DropCaps=true：目标进程 exec 后 CapEff 也应为全零（降权真正生效）
+	dropOut := runCapture(t, &Spec{DropCaps: true, Command: []string{"/bin/sh", "-c", "grep CapEff /proc/self/status"}})
+	if cap := extractCapField(t, dropOut, "CapEff"); cap != "0000000000000000" {
+		t.Errorf("expected zero CapEff with DropCaps, got %q", cap)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"cryolab/internal/engine"
 	"cryolab/internal/manifest"
+	"cryolab/internal/snapshot"
 	"cryolab/internal/store"
 )
 
@@ -123,8 +125,27 @@ func cmdRun(args []string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "snapshot %s: %v\n", name, err)
 		return 1
 	}
-	// 以快照的冻结 base 为工作目录在沙箱里运行（overlayfs 挂载见 roadmap）
-	code, err := engine.Run(&engine.Spec{Command: cmd, Workdir: s.BasePath(name)})
+	// 冻结 + 复现：overlay lower=快照 base（只读冻结层），upper/work/mnt=一次性可丢弃写层
+	tmp, err := os.MkdirTemp("", "cryo-run-*")
+	if err != nil {
+		fmt.Fprintf(stderr, "temp: %v\n", err)
+		return 1
+	}
+	defer os.RemoveAll(tmp)
+	upper := filepath.Join(tmp, "upper")
+	work := filepath.Join(tmp, "work")
+	mnt := filepath.Join(tmp, "mnt")
+	for _, d := range []string{upper, work, mnt} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			fmt.Fprintf(stderr, "mkdir: %v\n", err)
+			return 1
+		}
+	}
+	code, err := engine.Run(&engine.Spec{
+		Command: cmd,
+		Overlay: &snapshot.Overlay{LowerDir: s.BasePath(name), UpperDir: upper, WorkDir: work, MountPoint: mnt},
+		Workdir: mnt,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "run: %v\n", err)
 		return 1
