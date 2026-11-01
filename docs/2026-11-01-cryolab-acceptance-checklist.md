@@ -55,6 +55,7 @@ cryo snapshot v1
 ### 3.2 配方对比
 
 ```bash
+rm -rf /tmp/s                        # 重置 store（v1 已在 §3.1 用过，重名会被拒）
 cryo snapshot v1 m1.json     # m1.json、m2.json 是两份 prompt/command 不同的 manifest
 cryo snapshot v2 m2.json
 cryo diff v1 v2
@@ -90,6 +91,7 @@ cryo run nope -- true
 ### 3.6 配方复现（env）+ 轨迹
 
 ```bash
+rm -rf /tmp/s                        # 重置 store
 echo '{"name":"v1","version":"1","command":["true"],"env":{"FOO":"bar"}}' > m1.json
 cryo snapshot v1 m1.json
 cryo run v1 -- sh -c 'echo FOO=$FOO'   # 预期：FOO=bar（manifest 的 env 被应用）
