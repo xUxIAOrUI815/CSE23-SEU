@@ -9,9 +9,12 @@ import (
 )
 
 // dropAllCaps 清空进程的 effective/permitted/inheritable capability 集，并禁止后续获得新特权。
-// 注：rootless 下无法修改 bounding set（PR_CAPBSET_DROP 需要初始 user namespace 的 CAP_SETPCAP），
-// 因此 uid 0 进程在 exec 时会从 bounding set 重新获得 capability——这是 rootless 的固有局限，
-// 见 readCapEff 报告的「exec 前」CapEff 与目标进程「exec 后」CapEff 的差异。
+//
+// rootless 局限（已确认）：clone(CLONE_NEWUSER) 出的子进程在写 uid_map 前后都没有 CAP_SETPCAP
+// （effective 集因 uid 未映射而空），因此无法用 PR_SET_SECUREBITS 的 SECBIT_NOROOT 阻止 uid 0
+// 在 exec 时从 bounding set 重新获得 capability；bounding set 本身也需要初始 userns 的 CAP_SETPCAP
+// 才能改动。所以本函数只能清空 exec 前的 capability，exec 后目标进程会重新获得完整 capability。
+// 彻底降权需要 C nsexec 辅助（runc 方案）或真实 root——见 roadmap。
 func dropAllCaps() error {
 	hdr := &unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
 	data := [2]unix.CapUserData{} // v3 用两个 32 位表示 64 位集合，全零 = 清空

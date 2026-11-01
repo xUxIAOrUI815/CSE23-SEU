@@ -43,3 +43,13 @@ func TestCreateRejectsUnsafeName(t *testing.T) {
 		t.Fatal("expected error for unsafe name")
 	}
 }
+
+func TestLoadManifestRejectsUnsafeName(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := s.LoadManifest("../evil"); err == nil {
+		t.Fatal("expected error for unsafe name")
+	}
+}

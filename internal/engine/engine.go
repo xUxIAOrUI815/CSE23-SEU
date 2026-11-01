@@ -25,6 +25,7 @@ type Spec struct {
 
 const (
 	initArg     = "__cryo-init"
+	initEnv     = "__CRYO_INIT"
 	rootfsEnv   = "__CRYO_ROOTFS"
 	workdirEnv  = "__CRYO_WORKDIR"
 	dropCapsEnv = "__CRYO_DROP_CAPS"
@@ -35,7 +36,7 @@ const (
 // init 检测 reexec 进入的 init 进程，直接走 initRun，避免落入测试/主程序入口。
 // 这是 runc 同款的 reexec 模式。
 func init() {
-	if len(os.Args) >= 2 && os.Args[1] == initArg {
+	if os.Getenv(initEnv) == "1" && len(os.Args) >= 2 && os.Args[1] == initArg {
 		spec := &Spec{
 			Command:  os.Args[2:],
 			Rootfs:   os.Getenv(rootfsEnv),
@@ -84,6 +85,7 @@ func parentRun(spec *Spec) (int, error) {
 		dropCaps = "1"
 	}
 	cmd.Env = append(os.Environ(),
+		initEnv+"=1",
 		rootfsEnv+"="+spec.Rootfs,
 		workdirEnv+"="+spec.Workdir,
 		dropCapsEnv+"="+dropCaps,

@@ -26,6 +26,18 @@ func TestDiffMissingArgs(t *testing.T) {
 	}
 }
 
+func TestRunUnknownSnapshot(t *testing.T) {
+	os.Setenv("CRYO_STORE", t.TempDir())
+	defer os.Unsetenv("CRYO_STORE")
+	var stderr bytes.Buffer
+	if code := Run([]string{"run", "nope", "--", "true"}, io.Discard, &stderr); code == 0 {
+		t.Error("expected non-zero exit for unknown snapshot")
+	}
+	if !strings.Contains(stderr.String(), "nope") {
+		t.Errorf("stderr should mention the snapshot name, got %q", stderr.String())
+	}
+}
+
 func TestSnapshotAndDiff(t *testing.T) {
 	os.Setenv("CRYO_STORE", t.TempDir())
 	defer os.Unsetenv("CRYO_STORE")

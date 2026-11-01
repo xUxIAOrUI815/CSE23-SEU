@@ -31,10 +31,18 @@ func (s *Store) snapshotDir(name string) string {
 	return filepath.Join(s.Root, "snapshots", name)
 }
 
-// Create 建 <root>/snapshots/<name>/{manifest.json, base/}。
-func (s *Store) Create(name string, m *manifest.Manifest) error {
+// checkName 校验快照名，防路径穿越。
+func checkName(name string) error {
 	if strings.ContainsAny(name, `/\`) || name == "." || name == ".." || name == "" {
 		return fmt.Errorf("store: invalid snapshot name %q", name)
+	}
+	return nil
+}
+
+// Create 建 <root>/snapshots/<name>/{manifest.json, base/}。
+func (s *Store) Create(name string, m *manifest.Manifest) error {
+	if err := checkName(name); err != nil {
+		return err
 	}
 	dir := s.snapshotDir(name)
 	if err := os.MkdirAll(filepath.Join(dir, "base"), 0o755); err != nil {
@@ -65,6 +73,9 @@ func (s *Store) List() ([]string, error) {
 
 // LoadManifest 读回某个快照的 manifest。
 func (s *Store) LoadManifest(name string) (*manifest.Manifest, error) {
+	if err := checkName(name); err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(filepath.Join(s.snapshotDir(name), "manifest.json"))
 	if err != nil {
 		return nil, err

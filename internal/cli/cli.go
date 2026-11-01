@@ -107,19 +107,24 @@ func cmdDiff(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdRun(args []string, stderr io.Writer) int {
-	sep := -1
-	for i, a := range args {
-		if a == "--" {
-			sep = i
-			break
-		}
-	}
-	if sep < 0 || sep == len(args)-1 {
+	// 形如: cryo run <name> -- <cmd...>
+	if len(args) < 3 || args[1] != "--" {
 		fmt.Fprintln(stderr, "用法: cryo run <name> -- <cmd...>")
 		return 2
 	}
-	cmd := args[sep+1:]
-	code, err := engine.Run(&engine.Spec{Command: cmd})
+	name := args[0]
+	cmd := args[2:]
+	s, err := openStore()
+	if err != nil {
+		fmt.Fprintf(stderr, "open store: %v\n", err)
+		return 1
+	}
+	if _, err := s.LoadManifest(name); err != nil {
+		fmt.Fprintf(stderr, "snapshot %s: %v\n", name, err)
+		return 1
+	}
+	// 以快照的冻结 base 为工作目录在沙箱里运行（overlayfs 挂载见 roadmap）
+	code, err := engine.Run(&engine.Spec{Command: cmd, Workdir: s.BasePath(name)})
 	if err != nil {
 		fmt.Fprintf(stderr, "run: %v\n", err)
 		return 1
