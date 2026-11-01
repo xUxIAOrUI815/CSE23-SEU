@@ -11,7 +11,8 @@
 在 **WSL2（Ubuntu）** 里，确认以下可用：
 
 ```bash
-go version          # 预期：go1.25.x linux/amd64（装在 ~/.local/go）
+export PATH=$HOME/.local/go/bin:$PATH   # 必须，否则 make 找不到 go
+go version          # 预期：go1.25.x linux/amd64
 cc --version        # 预期：有 gcc/clang（build-essential）
 export GOPROXY=https://goproxy.cn,direct   # 国内网络拉取 x/sys 依赖
 ```
@@ -35,7 +36,7 @@ make test           # 预期：6 个包全部 ok，无 FAIL
 | `TestSeccompBlocks` | seccomp-bpf | 白名单外的 syscall（execve）被拦截，退出码非零 |
 | `TestMemoryLimit` | RLIMIT_AS | 地址空间上限 33554432 字节可见 |
 | `TestOverlayMount` | overlayfs | 写落到 upper，lower 不变 |
-| `TestOptionString` / `TestOverlayFreeze` | overlayfs 挂载选项 / 冻结语义 | 选项串正确；unshare 内可挂载 |
+| `TestOverlayMount` / `TestDropCapsAndOverlay` | overlayfs / capabilities+overlay 组合 | 写落 upper、lower 不变；降权后仍能挂载 overlay 且 `CapEff` 全零 |
 | `TestParseValid` / `TestDiff*` | manifest 配方 | 缺 command 报错；diff 输出字段差异 |
 | `TestCreateAndList` / `Test*UnsafeName` | 快照存储 + 路径穿越防护 | 建快照/列出正确；`../evil` 被拒 |
 | `TestRecordReadBack` | 轨迹 JSONL | 两行事件可读回 |
@@ -86,6 +87,15 @@ cryo run nope -- true
 
 **预期**：输出 `snapshot nope: ... no such file or directory`，退出码非 0。
 
+### 3.6 配方复现（env）+ 轨迹
+
+```bash
+echo '{"name":"v1","version":"1","command":["true"],"env":{"FOO":"bar"}}' > m1.json
+cryo snapshot v1 m1.json
+cryo run v1 -- sh -c 'echo FOO=$FOO'   # 预期：FOO=bar（manifest 的 env 被应用）
+ls /tmp/s/runs/                        # 预期：有 v1-*.jsonl 轨迹文件（含 exec + exit 两条事件）
+```
+
 ## 4. 课程要求对照
 
 | 要求 | 落点 |
@@ -98,5 +108,5 @@ cryo run nope -- true
 ## 5. 已知局限（如实说明）
 
 - **进程数/CPU 限额**用 RLIMIT 而非 cgroup v2（rootless 下 cgroupfs 归宿主 root，写不了），cgroup 记为 roadmap。
-- **信号退出码语义**（被信号杀死时 `-1`→255）未处理，属低优先级。
+- **信号退出码语义**：目标进程被信号杀死时 nshelper 已正确返回 `128+sig`（如 SIGKILL→137）；仅当 nshelper 自身被信号杀死才出现 `-1`→255，属低优先级边缘情况。
 - **seccomp 未做 arch 检查**（仅面向 x86_64）。
